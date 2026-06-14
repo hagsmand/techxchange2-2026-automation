@@ -24,4 +24,4 @@ jobs:
 
       - name: Run tests
         working-directory: rag-app
-        run: uv run pytest --tb=short -q
+        run: uv run pytest
