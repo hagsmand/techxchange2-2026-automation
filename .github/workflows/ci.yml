@@ -44,7 +44,7 @@ jobs:
           node-version: "22"
 
       - name: Install Bob Shell
-        run: curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash
+        run: curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --pm npm
 
       - name: Bob — review this PR
         env:
