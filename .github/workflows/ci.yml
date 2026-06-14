@@ -44,7 +44,10 @@ jobs:
           node-version: "22"
 
       - name: Install Bob Shell
-        run: curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --pm npm
+        run: |
+          curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --pm npm
+          # Add npm global bin to PATH for subsequent steps
+          echo "$(npm root -g)/../bin" >> $GITHUB_PATH
 
       - name: Bob — review this PR
         env:
@@ -55,7 +58,10 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Get the diff for context
+          # Verify bob is reachable and BOBSHELL_API_KEY is set
+          which bob || { echo "bob not found on PATH: $PATH"; exit 1; }
+          [ -n "$BOBSHELL_API_KEY" ] || { echo "BOBSHELL_API_KEY is empty — check GitHub secret"; exit 1; }
+
           DIFF=$(git diff $BASE_SHA...$HEAD_SHA --stat)
 
           bob --auth-method api-key -p "
