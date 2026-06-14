@@ -168,7 +168,7 @@ Create the main deployment workflow that fires when code lands on `main`. It bui
   - `OPENCODE_ZEN_API_KEY` — from `.env.example`
   - `OPENCODE_ZEN_BASE_URL` — from `.env.example`
   - `OPENCODE_ZEN_MODEL` — from `.env.example`
-  - `GITHUB_PERSONAL_ACCESS_TOKEN` — GitHub PAT for the MCP server
+  - ``GH_PAT` | Secret | GitHub Actions Secrets | GitHub PAT (repo, read:org, read:user) — renamed from GITHUB_PERSONAL_ACCESS_TOKEN (reserved prefix)
 - `GITHUB_TOKEN` is auto-provided by Actions — used for GHCR login (no extra secret needed)
 - `OPENSHIFT_NAMESPACE` stored as a GitHub Actions **Variable** (not secret) — e.g. `rag-app-ns`
 - `redhat-actions/oc-login@v1` — official Red Hat action for OCP auth
@@ -247,7 +247,7 @@ Enforce that the CI check passes before any PR can be merged to `main`, giving t
 | `OPENCODE_ZEN_API_KEY` | Secret | GitHub Actions Secrets | Your OpenCode Zen key |
 | `OPENCODE_ZEN_BASE_URL` | Secret | GitHub Actions Secrets | `https://opencode.ai/zen/v1` |
 | `OPENCODE_ZEN_MODEL` | Secret | GitHub Actions Secrets | `deepseek-v4-flash` |
-| `GITHUB_PERSONAL_ACCESS_TOKEN` | Secret | GitHub Actions Secrets | GitHub PAT (repo, read:org, read:user) |
+| ``GH_PAT` | Secret | GitHub Actions Secrets | GitHub PAT (repo, read:org, read:user) — renamed from GITHUB_PERSONAL_ACCESS_TOKEN (reserved prefix)
 | `OPENSHIFT_NAMESPACE` | Variable | GitHub Actions Variables | `rag-app-ns` (or your namespace) |
 | `GITHUB_TOKEN` | Auto | Provided by Actions | No action needed |
 

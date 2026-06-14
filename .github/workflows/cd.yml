@@ -70,7 +70,7 @@ jobs:
             --from-literal=OPENCODE_ZEN_API_KEY="${{ secrets.OPENCODE_ZEN_API_KEY }}" \
             --from-literal=OPENCODE_ZEN_BASE_URL="${{ secrets.OPENCODE_ZEN_BASE_URL }}" \
             --from-literal=OPENCODE_ZEN_MODEL="${{ secrets.OPENCODE_ZEN_MODEL }}" \
-            --from-literal=GITHUB_PERSONAL_ACCESS_TOKEN="${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN }}" \
+            --from-literal=GITHUB_PERSONAL_ACCESS_TOKEN="${{ secrets.GH_PAT }}" \
             --save-config \
             --dry-run=client \
             -o yaml \
