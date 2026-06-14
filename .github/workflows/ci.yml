@@ -59,8 +59,8 @@ jobs:
         run: |
           DIFF=$(git diff $BASE_SHA...$HEAD_SHA --stat)
 
-          RAW_OUTPUT=$(bob --accept-license --auth-method api-key -p "
-          You are a senior code reviewer. Review PR #${PR_NUMBER}: '${PR_TITLE}'.
+          RAW_OUTPUT=$(bob --accept-license --auth-method api-key -p \
+            "You are a senior code reviewer. Review PR #${PR_NUMBER}: '${PR_TITLE}'.
 
           Files changed:
           ${DIFF}
@@ -77,22 +77,28 @@ jobs:
           Wrap your ENTIRE response in <answer> and </answer> tags like this:
           <answer>
           your review here
-          </answer>
-          " 2>&1)
+          </answer>" 2>&1)
 
           # Extract only the text between <answer>...</answer>
-          REVIEW=$(echo "$RAW_OUTPUT" | sed -n 's/.*<answer>//;/<\/answer>/q;p' | sed '/<\/answer>/d')
+          REVIEW=$(echo "$RAW_OUTPUT" | sed -n '/<answer>/,/<\/answer>/p' | sed 's/<answer>//' | sed 's/<\/answer>//')
 
-          # Write to a file to safely pass multiline content between steps
+          # Write review to file — avoids all quoting issues when passing to next step
           echo "$REVIEW" > /tmp/bob_review.md
-          echo "review_file=/tmp/bob_review.md" >> $GITHUB_OUTPUT
 
       - name: Post Bob review as PR comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          REVIEW=$(cat /tmp/bob_review.md)
+          # Build the comment body in a file — no shell quoting issues
+          {
+            echo "## 🤖 Bob AI Code Review"
+            echo ""
+            cat /tmp/bob_review.md
+            echo ""
+            echo "---"
+            echo "*Reviewed by [IBM Bob Shell](https://bob.ibm.com) · CI job \`bob-review\`*"
+          } > /tmp/comment.md
 
           gh pr comment ${{ github.event.pull_request.number }} \
             --repo hagsmand/techxchange2-2026-automation \
-            --body "## 🤖 Bob AI Code Review
+            --body-file /tmp/comment.md
