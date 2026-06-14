@@ -25,3 +25,83 @@ jobs:
       - name: Run tests
         working-directory: rag-app
         run: uv run pytest
+
+  bob-review:
+    name: Bob PR Review
+    runs-on: ubuntu-latest
+    needs: pytest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Bob Shell
+        run: |
+          curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --pm npm
+          echo "$(npm root -g)/../bin" >> $GITHUB_PATH
+
+      - name: Bob — review this PR
+        id: bob_review
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOB_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          DIFF=$(git diff $BASE_SHA...$HEAD_SHA --stat)
+
+          RAW_OUTPUT=$(bob --accept-license --auth-method api-key -p \
+            "You are a senior code reviewer. Review PR #${PR_NUMBER}: '${PR_TITLE}'.
+
+          Files changed:
+          ${DIFF}
+
+          Provide a concise review covering:
+          1. Code quality and best practices
+          2. Security concerns (secrets, env vars, credentials)
+          3. Docker / Kubernetes manifest correctness
+          4. GitHub Actions workflow correctness
+          5. Python code quality
+
+          Format your response in markdown.
+          Do NOT call any tools.
+          Wrap your ENTIRE response in <answer> and </answer> tags like this:
+          <answer>
+          your review here
+          </answer>" 2>&1)
+
+          # Extract only the text between <answer>...</answer>
+          REVIEW=$(echo "$RAW_OUTPUT" | sed -n '/<answer>/,/<\/answer>/p' | sed 's/<answer>//' | sed 's/<\/answer>//')
+
+          # Write review to file — avoids all quoting issues when passing to next step
+          echo "$REVIEW" > /tmp/bob_review.md
+
+      - name: Post Bob review as PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Build the comment body in a file — no shell quoting issues
+          {
+            echo "## 🤖 Bob AI Code Review"
+            echo ""
+            cat /tmp/bob_review.md
+            echo ""
+            echo "---"
+            echo "*Reviewed by [IBM Bob Shell](https://bob.ibm.com) · CI job \`bob-review\`*"
+          } > /tmp/comment.md
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo hagsmand/techxchange2-2026-automation \
+            --body-file /tmp/comment.md
