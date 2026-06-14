@@ -1,0 +1,27 @@
+name: CI — Lint & Test
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies (incl. dev)
+        working-directory: rag-app
+        run: uv sync
+
+      - name: Run tests
+        working-directory: rag-app
+        run: uv run pytest --tb=short -q

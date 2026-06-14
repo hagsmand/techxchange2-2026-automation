@@ -1,0 +1,18 @@
+# Virtual environment — rebuilt in Docker
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets — never bake into image
+.env
+*.env
+
+# Git & tooling
+.git/
+.gitignore
+.pytest_cache/
+*.log

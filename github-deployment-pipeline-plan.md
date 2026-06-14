@@ -40,7 +40,7 @@ Merge to main
 
 ### Sub-Task 1 — Add a `Dockerfile` for the `rag-app`
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**
 The app needs a container image to run on OCP. This task produces a production-ready, minimal `Dockerfile` for the FastAPI/uvicorn app in `rag-app/`.
@@ -67,7 +67,7 @@ The app needs a container image to run on OCP. This task produces a production-r
 
 ### Sub-Task 2 — Add OCP Kubernetes Manifests
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**
 Define the OCP/Kubernetes objects needed to run the app: a `Deployment`, a `Service`, and an OCP `Route` (public HTTPS URL). These are declarative YAML files checked into the repo so the pipeline can `oc apply` them.
@@ -102,7 +102,7 @@ Define the OCP/Kubernetes objects needed to run the app: a `Deployment`, a `Serv
 
 ### Sub-Task 3 — CI Workflow: Test on Pull Requests
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**
 Create a GitHub Actions workflow that runs `pytest` on every pull request targeting `main`. This acts as a gate — the PR cannot be merged if tests fail.
@@ -131,7 +131,7 @@ Create a GitHub Actions workflow that runs `pytest` on every pull request target
 
 ### Sub-Task 4 — CD Workflow: Build, Push to GHCR, Deploy to OCP
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**
 Create the main deployment workflow that fires when code lands on `main`. It builds the Docker image, pushes it to GHCR with the commit SHA as the image tag, then logs into the OCP cluster and applies all manifests with the correct image tag.
@@ -177,7 +177,7 @@ Create the main deployment workflow that fires when code lands on `main`. It bui
 
 ### Sub-Task 5 — OCP Service Account Setup (One-Time Manual Step)
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**
 The pipeline needs a stable, long-lived token to authenticate with OCP. A dedicated OCP Service Account (SA) with `edit` role in the target namespace provides this — it avoids using a personal token that expires.
@@ -212,7 +212,7 @@ The pipeline needs a stable, long-lived token to authenticate with OCP. A dedica
 
 ### Sub-Task 6 — Configure GitHub Branch Protection
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**
 Enforce that the CI check passes before any PR can be merged to `main`, giving the test gate real teeth.

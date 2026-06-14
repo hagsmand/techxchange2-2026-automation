@@ -1,0 +1,92 @@
+name: CD — Build, Push & Deploy to OCP
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── Job 1: Build Docker image and push to GHCR ─────────────────────────────
+  build-push:
+    name: Build & Push image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: rag-app
+          file: rag-app/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # ── Job 2: Deploy to OCP ────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to OCP
+    runs-on: ubuntu-latest
+    needs: build-push
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to OCP cluster
+        uses: redhat-actions/oc-login@v1
+        with:
+          openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+          openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+          insecure_skip_tls_verify: true
+
+      - name: Switch to target namespace
+        run: oc project ${{ vars.OPENSHIFT_NAMESPACE }}
+
+      - name: Create / update OCP Secret (app env vars)
+        run: |
+          oc create secret generic rag-app-secrets \
+            --from-literal=OPENCODE_ZEN_API_KEY="${{ secrets.OPENCODE_ZEN_API_KEY }}" \
+            --from-literal=OPENCODE_ZEN_BASE_URL="${{ secrets.OPENCODE_ZEN_BASE_URL }}" \
+            --from-literal=OPENCODE_ZEN_MODEL="${{ secrets.OPENCODE_ZEN_MODEL }}" \
+            --from-literal=GITHUB_PERSONAL_ACCESS_TOKEN="${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN }}" \
+            --save-config \
+            --dry-run=client \
+            -o yaml \
+          | oc apply -f -
+
+      - name: Substitute image tag in deployment manifest
+        run: |
+          IMAGE_TAG="${{ needs.build-push.outputs.image_tag }}"
+          sed -i "s|IMAGE_TAG|${IMAGE_TAG}|g" k8s/deployment.yaml
+
+      - name: Apply Kubernetes manifests
+        run: oc apply -f k8s/
+
+      - name: Wait for rollout
+        run: oc rollout status deployment/rag-app --timeout=120s
+
+      - name: Print app Route URL
+        run: |
+          echo "App URL: https://$(oc get route rag-app -o jsonpath='{.spec.host}')"
