@@ -56,12 +56,12 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BOB_API_KEY: ${{ secrets.BOB_API_KEY }}
+          BOBSHELL_API_KEY: ${{ secrets.BOB_API_KEY }}
         run: |
           # Verify bob is reachable
           which bob || { echo "bob not found on PATH: $PATH"; exit 1; }
           echo ${{secrets.GITHUB_TOKEN}}
-          echo ${{secrets.BOB_API_KEY}}
+          echo ${{env.BOBSHELL_API_KEY}}
 
           # Explicitly export so child processes inherit it
           export BOBSHELL_API_KEY="${BOBSHELL_API_KEY}"
