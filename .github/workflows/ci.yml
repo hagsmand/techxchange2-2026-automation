@@ -60,8 +60,8 @@ jobs:
         run: |
           # Verify bob is reachable
           which bob || { echo "bob not found on PATH: $PATH"; exit 1; }
-          echo ${secrets.GITHUB_TOKEN}
-          echo ${secrets.BOB_API_KEY}
+          echo ${{secrets.GITHUB_TOKEN}}
+          echo ${{secrets.BOB_API_KEY}}
 
           # Explicitly export so child processes inherit it
           export BOBSHELL_API_KEY="${BOBSHELL_API_KEY}"
