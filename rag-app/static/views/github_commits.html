@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Commits</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      background:var(--color-bg,#0d1117);color:var(--color-text,#e6edf3);
+      padding:16px;font-size:14px}
+    .header{display:flex;align-items:center;gap:8px;margin-bottom:14px;
+      padding-bottom:10px;border-bottom:1px solid #30363d}
+    .header-icon{color:#58a6ff}
+    .header-title{font-size:0.95rem;font-weight:600}
+    .branch-tag{font-size:0.72rem;font-family:"SF Mono",Menlo,monospace;
+      background:#1a2a1a;border:1px solid #2a6a2a;border-radius:4px;
+      padding:2px 8px;color:#4ade80}
+    .repo-tag{font-size:0.72rem;font-family:"SF Mono",Menlo,monospace;
+      background:#21262d;border:1px solid #30363d;border-radius:4px;
+      padding:2px 8px;color:#8b949e;margin-left:auto}
+    .commit{padding:12px 0;border-bottom:1px solid #21262d;
+      display:flex;align-items:flex-start;gap:12px}
+    .commit:last-child{border-bottom:none}
+    .sha{font-family:"SF Mono",Menlo,monospace;font-size:0.78rem;
+      color:#58a6ff;background:#1f6feb15;border-radius:4px;
+      padding:2px 6px;flex-shrink:0;cursor:pointer;text-decoration:none}
+    .sha:hover{background:#1f6feb30;text-decoration:underline}
+    .commit-info{flex:1;min-width:0}
+    .commit-msg{font-size:0.9rem;color:#e6edf3;font-weight:500;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .commit-meta{font-size:0.75rem;color:#8b949e;margin-top:4px;
+      display:flex;gap:10px;flex-wrap:wrap}
+    .author-avatar{width:20px;height:20px;border-radius:50%;background:#30363d;
+      font-size:0.6rem;display:flex;align-items:center;justify-content:center;
+      flex-shrink:0;color:#8b949e;font-weight:700}
+    .branch-select{background:#0d1117;border:1px solid #30363d;border-radius:6px;
+      padding:5px 8px;color:#e6edf3;font-size:0.82rem;outline:none;cursor:pointer}
+    .branch-select:focus{border-color:#58a6ff}
+    .btn{padding:6px 14px;border-radius:6px;border:1px solid #30363d;
+      font-size:0.82rem;font-weight:600;cursor:pointer;transition:all 0.15s;
+      background:#21262d;color:#c9d1d9}
+    .btn:hover{background:#30363d}
+    .btn:disabled{opacity:0.5;cursor:not-allowed}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #30363d;
+      border-top-color:#58a6ff;border-radius:50%;animation:spin 0.7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .status{padding:12px 0;color:#8b949e;font-size:0.85rem}
+    .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+    .count-badge{font-size:0.75rem;color:#8b949e}
+  </style>
+</head>
+<body>
+  <div id="root"><div class="status"><span class="spinner"></span> Loading…</div></div>
+
+  <script type="module">
+    let _id = 1;
+    const pending = new Map();
+    let hostOrigin = '*';
+
+    function rpc(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = _id++;
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, hostOrigin);
+        setTimeout(() => { pending.delete(id); reject(new Error('timeout')); }, 30000);
+      });
+    }
+
+    window.addEventListener('message', (e) => {
+      const msg = e.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+      }
+      if (msg.id === undefined && msg.method === 'ui/notifications/tool-result') handleToolResult(msg.params);
+    });
+
+    const callTool = (name, args) => rpc('tools/call', { name, arguments: args });
+
+    async function init() {
+      let ctx = {};
+      try { ctx = await rpc('ui/initialize', { name: 'github-commits-view', version: '1.0' }); } catch(e) {}
+      if (ctx.origin) hostOrigin = ctx.origin;
+      window.parent.postMessage(
+        { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+        hostOrigin
+      );
+    }
+
+    let commits = [], repoCtx = null, currentBranch = 'main', branches = ['main'];
+
+    // Agent sends: { full_name: "owner/repo", branch: "main", commits: [...] }
+    // for github_commits view. The host wraps it as params: { result: <data> }
+    function handleToolResult(params) {
+      const payload = params?.result ?? params;
+
+      if (Array.isArray(payload) && payload[0]?.sha) {
+        // Shape: raw array of commits (e.g. from direct tool call)
+        commits = payload;
+        render();
+      } else if (payload?.commits && Array.isArray(payload.commits)) {
+        // Shape: { full_name, branch, commits } — agent output
+        commits = payload.commits;
+        if (payload.branch) currentBranch = payload.branch;
+        // full_name takes priority; fall back to legacy "repo" key
+        const fn = payload.full_name || payload.repo || null;
+        if (fn) repoCtx = { full_name: fn };
+        render();
+      }
+    }
+
+    function render() {
+      const root = document.getElementById('root');
+      root.innerHTML = `
+        <div class="header">
+          <span class="header-icon">○</span>
+          <span class="header-title">Commits</span>
+          <span class="branch-tag">🌿 ${currentBranch}</span>
+          ${repoCtx?.full_name?`<span class="repo-tag">${repoCtx.full_name}</span>`:''}
+        </div>
+        <div class="toolbar">
+          <select class="branch-select" id="branch-sel">
+            ${branches.map(b=>`<option value="${b}" ${b===currentBranch?'selected':''}>${b}</option>`).join('')}
+          </select>
+          <button class="btn" id="load-branches">Load Branches</button>
+          <span class="count-badge">${commits.length} commits</span>
+          <button class="btn" id="refresh-btn" style="margin-left:auto">↺ Refresh</button>
+        </div>
+        <div>
+          ${commits.length ? commits.map(c => {
+            const msg = c.commit?.message || c.message || '';
+            const author = c.commit?.author?.name || c.author?.login || c.author || '';
+            const date = (c.commit?.author?.date || c.date || '').slice(0,10);
+            const sha = c.sha || c.id || '';
+            const url = c.html_url || '';
+            return `
+            <div class="commit">
+              <a class="sha" href="${url}" target="_blank">${sha.slice(0,7)}</a>
+              <div class="commit-info">
+                <div class="commit-msg">${msg.split('\n')[0]}</div>
+                <div class="commit-meta">
+                  <span style="color:#c9d1d9;font-weight:600">${author}</span>
+                  <span>${date}</span>
+                </div>
+              </div>
+            </div>`;
+          }).join('') : '<div class="status">No commits loaded yet.</div>'}
+        </div>`;
+
+      document.getElementById('refresh-btn').onclick = refreshCommits;
+      document.getElementById('load-branches').onclick = loadBranches;
+      document.getElementById('branch-sel').onchange = async (e) => {
+        currentBranch = e.target.value;
+        await refreshCommits();
+      };
+    }
+
+    async function loadBranches() {
+      if (!repoCtx) return;
+      const btn = document.getElementById('load-branches');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const [owner, repo] = (repoCtx.full_name||'').split('/');
+        const res = await callTool('list_branches', { owner, repo });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { branches = JSON.parse(text).map(b=>b.name||b); render(); }
+      } catch(e){console.error(e)} finally { btn.disabled=false; btn.textContent='Load Branches'; }
+    }
+
+    async function refreshCommits() {
+      if (!repoCtx) return;
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const [owner, repo] = (repoCtx.full_name||'').split('/');
+        const res = await callTool('list_commits', { owner, repo, sha: currentBranch });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { commits = JSON.parse(text); render(); }
+      } catch(e){console.error(e)} finally { btn.disabled=false; btn.textContent='↺ Refresh'; }
+    }
+
+    init().catch(console.warn);
+  </script>
+</body>
+</html>

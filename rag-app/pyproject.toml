@@ -1,0 +1,19 @@
+[project]
+name = "zen-chat"
+version = "0.1.0"
+description = "Simple web chat app using OpenCode Zen API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.136.3",
+    "uvicorn[standard]>=0.49.0",
+    "openai>=2.41.1",
+    "python-dotenv>=1.0",
+    "mcp>=1.27.2",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

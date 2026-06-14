@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Repository</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      background:#0d1117;color:#e6edf3;padding:16px;font-size:14px}
+    .repo-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+    .repo-icon{color:#58a6ff;font-size:18px}
+    .repo-name{font-size:1.1rem;font-weight:700;color:#58a6ff;text-decoration:none}
+    .repo-name:hover{text-decoration:underline}
+    .repo-vis{font-size:0.68rem;font-weight:600;text-transform:uppercase;
+      background:#21262d;border:1px solid #30363d;border-radius:20px;
+      padding:2px 8px;color:#8b949e;margin-left:auto}
+    .repo-desc{color:#8b949e;line-height:1.5;margin-bottom:14px;font-size:0.88rem}
+    .stats{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:16px}
+    .stat{display:flex;align-items:center;gap:5px;color:#8b949e;font-size:0.82rem}
+    .lang-dot{width:12px;height:12px;border-radius:50%;background:#3572A5;flex-shrink:0}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{padding:6px 14px;border-radius:6px;border:1px solid #30363d;
+      font-size:0.82rem;font-weight:600;cursor:pointer;transition:all 0.15s}
+    .btn-primary{background:#238636;border-color:#2ea043;color:#fff}
+    .btn-primary:hover{background:#2ea043}
+    .btn-secondary{background:#21262d;color:#c9d1d9}
+    .btn-secondary:hover{background:#30363d}
+    .btn:disabled{opacity:0.5;cursor:not-allowed}
+    .section{margin-top:16px}
+    .section-title{font-size:0.78rem;font-weight:600;color:#8b949e;
+      text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px}
+    .item-list{display:flex;flex-direction:column;gap:0}
+    .item{padding:10px 0;border-bottom:1px solid #21262d;
+      display:flex;flex-direction:column;gap:4px}
+    .item:last-child{border-bottom:none}
+    .item-top{display:flex;align-items:center;gap:8px}
+    .item-badge{font-size:0.65rem;font-weight:700;text-transform:uppercase;
+      border:1px solid;border-radius:20px;padding:2px 8px;flex-shrink:0}
+    .open{background:#1a3a1a;border-color:#2a6a2a;color:#4ade80}
+    .closed{background:#2a1a1a;border-color:#5a1a1a;color:#f87171}
+    .merged{background:#2a1a3a;border-color:#5a2a6a;color:#c084fc}
+    .item-num{font-size:0.78rem;color:#8b949e;font-family:"SF Mono",Menlo,monospace}
+    .item-title{font-size:0.9rem;font-weight:500;color:#e6edf3}
+    .item-meta{font-size:0.75rem;color:#8b949e;display:flex;gap:8px;flex-wrap:wrap}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #30363d;
+      border-top-color:#58a6ff;border-radius:50%;animation:spin 0.7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .status{font-size:0.82rem;color:#8b949e;padding:8px 0;
+      display:flex;align-items:center;gap:8px}
+    .tab-bar{display:flex;gap:0;border-bottom:1px solid #30363d;margin-bottom:12px}
+    .tab{padding:8px 16px;font-size:0.82rem;font-weight:600;color:#8b949e;
+      cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s}
+    .tab:hover{color:#e6edf3}
+    .tab.active{color:#e6edf3;border-bottom-color:#f78166}
+    .topics{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+    .topic{font-size:0.72rem;font-weight:600;background:#1f6feb20;border:1px solid #1f6feb40;
+      color:#58a6ff;border-radius:20px;padding:2px 10px}
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="status"><span class="spinner"></span> Loading…</div>
+  </div>
+
+  <script type="module">
+    // ── MCP Apps postMessage bridge (View side) ─────────────────────────────
+    let _id = 1;
+    const pending = new Map();
+    let hostOrigin = '*';
+
+    function rpc(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = _id++;
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, hostOrigin);
+        setTimeout(() => { pending.delete(id); reject(new Error('timeout')); }, 30000);
+      });
+    }
+
+    window.addEventListener('message', (e) => {
+      const msg = e.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+      }
+      // Notifications (no id)
+      if (msg.id === undefined && msg.method === 'ui/notifications/tool-result') {
+        handleToolResult(msg.params);
+      }
+    });
+
+    async function callTool(name, args) {
+      return rpc('tools/call', { name, arguments: args });
+    }
+
+    // ── Initialize handshake ────────────────────────────────────────────────
+    async function init() {
+      let ctx = {};
+      try {
+        ctx = await rpc('ui/initialize', { name: 'github-repo-view', version: '1.0' });
+      } catch(e) {}
+      if (ctx.origin) hostOrigin = ctx.origin;
+      window.parent.postMessage(
+        { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+        hostOrigin
+      );
+    }
+
+    // ── State ───────────────────────────────────────────────────────────────
+    let repoData = null;
+    let issuesData = [];
+    let prsData = [];
+    let tab = 'overview';
+
+    // ── Receive tool-result data ────────────────────────────────────────────
+    // Agent sends data: <raw repo object> for github_repo view.
+    // The host wraps it as params: { result: <data> }
+    function handleToolResult(params) {
+      const payload = params?.result ?? params;
+
+      // Handle all possible shapes the agent might return:
+      // 1. Raw repo object:         { full_name, html_url, stargazers_count, ... }
+      // 2. Wrapped:                 { repo: { full_name, ... } }
+      // 3. With additional context: { full_name: "owner/repo", repo: {...} }
+      let repo = null;
+      if (payload?.full_name || payload?.html_url || payload?.name) {
+        // Shape 1: raw repo object
+        repo = payload;
+      } else if (payload?.repo && typeof payload.repo === 'object') {
+        // Shape 2: wrapped
+        repo = payload.repo;
+      }
+
+      if (repo) {
+        repoData = repo;
+        render();
+      }
+    }
+
+    // ── Render ──────────────────────────────────────────────────────────────
+    function render() {
+      const root = document.getElementById('root');
+      if (!repoData) {
+        root.innerHTML = '<div class="status"><span class="spinner"></span> Waiting for data…</div>';
+        return;
+      }
+      const r = repoData;
+      const topics = r.topics || [];
+      root.innerHTML = `
+        <div class="repo-header">
+          <span class="repo-icon">⬡</span>
+          <a class="repo-name" href="${r.html_url||r.url||'#'}" target="_blank">${r.full_name||r.name||'—'}</a>
+          <span class="repo-vis">${r.private?'private':'public'}</span>
+        </div>
+        ${r.description?`<p class="repo-desc">${r.description}</p>`:''}
+        ${topics.length?`<div class="topics">${topics.map(t=>`<span class="topic">${t}</span>`).join('')}</div>`:''}
+        <div class="stats">
+          ${r.language?`<span class="stat"><span class="lang-dot"></span>${r.language}</span>`:''}
+          <span class="stat">⭐ ${(r.stargazers_count??r.stars??0).toLocaleString()}</span>
+          <span class="stat">🍴 ${(r.forks_count??r.forks??0).toLocaleString()}</span>
+          <span class="stat">◎ ${r.open_issues_count??r.open_issues??0} issues</span>
+          <span class="stat">🌿 ${r.default_branch??'main'}</span>
+          ${r.license?.name?`<span class="stat">⚖ ${r.license.name}</span>`:''}
+        </div>
+        <div class="tab-bar">
+          <div class="tab ${tab==='overview'?'active':''}" data-tab="overview">Overview</div>
+          <div class="tab ${tab==='issues'?'active':''}" data-tab="issues">Issues</div>
+          <div class="tab ${tab==='prs'?'active':''}" data-tab="prs">Pull Requests</div>
+        </div>
+        <div id="tab-content"></div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn btn-secondary" id="refresh-btn">↺ Refresh</button>
+          <button class="btn btn-primary" id="issues-btn">Load Issues</button>
+          <button class="btn btn-primary" id="prs-btn">Load PRs</button>
+        </div>`;
+
+      renderTab();
+
+      document.querySelectorAll('.tab').forEach(t =>
+        t.addEventListener('click', () => { tab = t.dataset.tab; render(); }));
+      document.getElementById('refresh-btn').onclick = loadRepo;
+      document.getElementById('issues-btn').onclick = loadIssues;
+      document.getElementById('prs-btn').onclick = loadPRs;
+    }
+
+    function renderTab() {
+      const el = document.getElementById('tab-content');
+      if (!el) return;
+      if (tab === 'overview') {
+        el.innerHTML = `<div class="status">Click "Load Issues" or "Load PRs" to explore.</div>`;
+      } else if (tab === 'issues') {
+        if (!issuesData.length) {
+          el.innerHTML = `<div class="status">No issues loaded yet. Click "Load Issues" above.</div>`;
+          return;
+        }
+        el.innerHTML = `<div class="item-list">${issuesData.slice(0,30).map(i=>`
+          <div class="item">
+            <div class="item-top">
+              <span class="item-badge ${i.state||'open'}">${(i.state||'open').toUpperCase()}</span>
+              <span class="item-num">#${i.number}</span>
+              <span class="item-title">${i.title||''}</span>
+            </div>
+            <div class="item-meta">
+              <span>${i.user?.login??''}</span>
+              <span>${(i.created_at||'').slice(0,10)}</span>
+              ${i.html_url?`<a href="${i.html_url}" target="_blank" style="color:#58a6ff;text-decoration:none">↗</a>`:''}
+            </div>
+          </div>`).join('')}</div>`;
+      } else if (tab === 'prs') {
+        if (!prsData.length) {
+          el.innerHTML = `<div class="status">No PRs loaded yet. Click "Load PRs" above.</div>`;
+          return;
+        }
+        el.innerHTML = `<div class="item-list">${prsData.slice(0,30).map(p=>`
+          <div class="item">
+            <div class="item-top">
+              <span class="item-badge ${p.merged_at?'merged':p.state||'open'}">${p.merged_at?'MERGED':(p.state||'open').toUpperCase()}</span>
+              <span class="item-num">#${p.number}</span>
+              <span class="item-title">${p.title||''}</span>
+            </div>
+            <div class="item-meta">
+              <span>${p.user?.login??''}</span>
+              <span>${(p.created_at||'').slice(0,10)}</span>
+              ${p.html_url?`<a href="${p.html_url}" target="_blank" style="color:#58a6ff;text-decoration:none">↗</a>`:''}
+            </div>
+          </div>`).join('')}</div>`;
+      }
+    }
+
+    // ── Tool calls from View → AppBridge → /tool → GitHub MCP ──────────────
+    async function loadRepo() {
+      if (!repoData) return;
+      const full = repoData.full_name || repoData.name || '';
+      const [owner, repo] = full.split('/');
+      if (!owner || !repo) return;
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const res = await callTool('get_repository', { owner, repo });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { repoData = JSON.parse(text); render(); }
+      } catch(e) { console.error(e); }
+      finally { btn.disabled=false; btn.textContent='↺ Refresh'; }
+    }
+
+    async function loadIssues() {
+      if (!repoData) return;
+      const full = repoData.full_name || repoData.name || '';
+      const [owner, repo] = full.split('/');
+      if (!owner || !repo) return;
+      const btn = document.getElementById('issues-btn');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const res = await callTool('list_issues', { owner, repo, state: 'open' });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { issuesData = JSON.parse(text); tab = 'issues'; render(); }
+      } catch(e) { console.error(e); }
+      finally { btn.disabled=false; btn.textContent='Load Issues'; }
+    }
+
+    async function loadPRs() {
+      if (!repoData) return;
+      const full = repoData.full_name || repoData.name || '';
+      const [owner, repo] = full.split('/');
+      if (!owner || !repo) return;
+      const btn = document.getElementById('prs-btn');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const res = await callTool('list_pull_requests', { owner, repo, state: 'open' });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { prsData = JSON.parse(text); tab = 'prs'; render(); }
+      } catch(e) { console.error(e); }
+      finally { btn.disabled=false; btn.textContent='Load PRs'; }
+    }
+
+    init().catch(console.warn);
+  </script>
+</body>
+</html>

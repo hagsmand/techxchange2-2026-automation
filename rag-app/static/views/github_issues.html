@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Issues</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      background:var(--color-bg,#0d1117);color:var(--color-text,#e6edf3);
+      padding:16px;font-size:14px}
+    .header{display:flex;align-items:center;gap:8px;margin-bottom:14px;
+      padding-bottom:10px;border-bottom:1px solid #30363d}
+    .header-icon{color:#4ade80;font-size:16px}
+    .header-title{font-size:0.95rem;font-weight:600}
+    .repo-tag{font-size:0.72rem;font-family:"SF Mono",Menlo,monospace;
+      background:#21262d;border:1px solid #30363d;border-radius:4px;
+      padding:2px 8px;color:#8b949e;margin-left:auto}
+    .filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+    .filter-btn{padding:5px 12px;border-radius:6px;border:1px solid #30363d;
+      font-size:0.78rem;font-weight:600;cursor:pointer;background:#21262d;
+      color:#8b949e;transition:all 0.15s}
+    .filter-btn.active,.filter-btn:hover{border-color:#58a6ff;color:#e6edf3;background:#1c2128}
+    .item{padding:12px 0;border-bottom:1px solid #21262d;display:flex;flex-direction:column;gap:6px}
+    .item:last-child{border-bottom:none}
+    .item-top{display:flex;align-items:flex-start;gap:8px}
+    .badge{font-size:0.65rem;font-weight:700;text-transform:uppercase;
+      border:1px solid;border-radius:20px;padding:2px 8px;flex-shrink:0;margin-top:2px}
+    .open{background:#1a3a1a;border-color:#2a6a2a;color:#4ade80}
+    .closed{background:#2a1a1a;border-color:#5a1a1a;color:#f87171}
+    .item-num{font-size:0.78rem;color:#8b949e;font-family:"SF Mono",Menlo,monospace;margin-top:3px}
+    .item-title{font-size:0.9rem;font-weight:500;color:#e6edf3;line-height:1.4}
+    .item-meta{font-size:0.75rem;color:#8b949e;display:flex;gap:10px;flex-wrap:wrap}
+    .label-chip{font-size:0.65rem;font-weight:600;background:#1f6feb20;
+      border:1px solid #1f6feb50;color:#58a6ff;border-radius:20px;padding:1px 7px}
+    .item-body{font-size:0.8rem;color:#8b949e;line-height:1.5;
+      background:#161b22;border-radius:6px;padding:8px;margin-top:2px}
+    .btn{padding:6px 14px;border-radius:6px;border:1px solid #30363d;
+      font-size:0.82rem;font-weight:600;cursor:pointer;transition:all 0.15s;
+      background:#21262d;color:#c9d1d9}
+    .btn:hover{background:#30363d}
+    .btn:disabled{opacity:0.5;cursor:not-allowed}
+    .btn-primary{background:#238636;border-color:#2ea043;color:#fff}
+    .btn-primary:hover:not(:disabled){background:#2ea043}
+    .toolbar{display:flex;gap:8px;margin-bottom:14px;align-items:center}
+    .search-input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;
+      padding:6px 10px;color:#e6edf3;font-size:0.82rem;outline:none}
+    .search-input:focus{border-color:#58a6ff}
+    .count{font-size:0.78rem;color:#8b949e;margin-left:auto}
+    .create-form{background:#161b22;border:1px solid #30363d;border-radius:8px;
+      padding:14px;margin-top:14px;display:none;flex-direction:column;gap:10px}
+    .create-form.open{display:flex}
+    .form-input{background:#0d1117;border:1px solid #30363d;border-radius:6px;
+      padding:8px;color:#e6edf3;font-size:0.82rem;outline:none;width:100%}
+    .form-input:focus{border-color:#58a6ff}
+    .form-textarea{resize:vertical;min-height:80px;font-family:inherit}
+    .form-label{font-size:0.75rem;color:#8b949e;font-weight:600}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #30363d;
+      border-top-color:#58a6ff;border-radius:50%;animation:spin 0.7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .status{padding:12px 0;color:#8b949e;font-size:0.85rem}
+    .empty{padding:24px;text-align:center;color:#8b949e}
+  </style>
+</head>
+<body>
+  <div id="root"><div class="status"><span class="spinner"></span> Loading…</div></div>
+
+  <script type="module">
+    // ── MCP Apps postMessage bridge ─────────────────────────────────────────
+    let _id = 1;
+    const pending = new Map();
+    let hostOrigin = '*';
+
+    function rpc(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = _id++;
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, hostOrigin);
+        setTimeout(() => { pending.delete(id); reject(new Error('timeout')); }, 30000);
+      });
+    }
+
+    window.addEventListener('message', (e) => {
+      const msg = e.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+      }
+      if (msg.id === undefined && msg.method === 'ui/notifications/tool-result') handleToolResult(msg.params);
+    });
+
+    const callTool = (name, args) => rpc('tools/call', { name, arguments: args });
+
+    async function init() {
+      let ctx = {};
+      try { ctx = await rpc('ui/initialize', { name: 'github-issues-view', version: '1.0' }); } catch(e) {}
+      if (ctx.origin) hostOrigin = ctx.origin;
+      window.parent.postMessage(
+        { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+        hostOrigin
+      );
+    }
+
+    // ── State ───────────────────────────────────────────────────────────────
+    let issues = [], repoCtx = null, filterState = 'open', searchQ = '', showCreate = false;
+    let creating = false;
+
+    // Agent sends: { full_name: "owner/repo", issues: [...] }  for github_issues view.
+    function handleToolResult(params) {
+      const payload = params?.result ?? params;
+      if (Array.isArray(payload)) {
+        issues = payload; render();
+      } else if (payload?.issues && Array.isArray(payload.issues)) {
+        issues = payload.issues;
+        // full_name takes priority over legacy "repo" key
+        const fn = payload.full_name || payload.repo || null;
+        if (fn) repoCtx = { full_name: fn };
+        render();
+      } else if (payload?.items && Array.isArray(payload.items)) {
+        issues = payload.items; render();
+      }
+    }
+
+    // ── Render ──────────────────────────────────────────────────────────────
+    function render() {
+      const root = document.getElementById('root');
+      const filtered = issues.filter(i =>
+        (i.state || 'open') === filterState &&
+        (i.title||'').toLowerCase().includes(searchQ.toLowerCase()));
+
+      root.innerHTML = `
+        <div class="header">
+          <span class="header-icon">◎</span>
+          <span class="header-title">Issues</span>
+          ${repoCtx?.repo||repoCtx?.full_name?`<span class="repo-tag">${repoCtx.full_name||repoCtx.repo}</span>`:''}
+        </div>
+        <div class="toolbar">
+          <input class="search-input" id="search" placeholder="Filter issues…" value="${searchQ}"/>
+          <span class="count">${filtered.length} shown</span>
+        </div>
+        <div class="filters">
+          <button class="filter-btn ${filterState==='open'?'active':''}" data-s="open">◎ Open</button>
+          <button class="filter-btn ${filterState==='closed'?'active':''}" data-s="closed">✓ Closed</button>
+        </div>
+        <div id="list">
+          ${filtered.length ? filtered.map(i=>`
+            <div class="item">
+              <div class="item-top">
+                <span class="badge ${i.state||'open'}">${(i.state||'open').toUpperCase()}</span>
+                <span class="item-num">#${i.number}</span>
+                <div>
+                  <div class="item-title">${i.title||''}</div>
+                  <div class="item-meta">
+                    <span>by <strong style="color:#c9d1d9">${i.user?.login||i.author||''}</strong></span>
+                    <span>${(i.created_at||'').slice(0,10)}</span>
+                    ${(i.labels||[]).map(l=>`<span class="label-chip">${l.name||l}</span>`).join('')}
+                    ${i.html_url?`<a href="${i.html_url}" target="_blank" style="color:#58a6ff;font-size:0.75rem;margin-left:auto;text-decoration:none">View ↗</a>`:''}
+                  </div>
+                </div>
+              </div>
+              ${i.body&&i.body.trim()?`<div class="item-body">${i.body.trim().slice(0,200)}${i.body.length>200?'…':''}</div>`:''}
+            </div>`).join('') : `<div class="empty">No ${filterState} issues found.</div>`}
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary" id="refresh-btn">↺ Refresh</button>
+          <button class="btn btn-primary" id="toggle-create">+ New Issue</button>
+        </div>
+        <div class="create-form ${showCreate?'open':''}" id="create-form">
+          <div>
+            <div class="form-label">Title</div>
+            <input class="form-input" id="new-title" placeholder="Issue title" value=""/>
+          </div>
+          <div>
+            <div class="form-label">Body</div>
+            <textarea class="form-input form-textarea" id="new-body" placeholder="Describe the issue…"></textarea>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" id="submit-issue" ${creating?'disabled':''}>
+              ${creating?'<span class="spinner"></span> Creating…':'Submit Issue'}
+            </button>
+            <button class="btn btn-secondary" id="cancel-create">Cancel</button>
+          </div>
+        </div>`;
+
+      document.getElementById('search').oninput = e => { searchQ = e.target.value; render(); };
+      document.querySelectorAll('.filter-btn').forEach(b =>
+        b.addEventListener('click', () => { filterState = b.dataset.s; render(); }));
+      document.getElementById('refresh-btn').onclick = refreshIssues;
+      document.getElementById('toggle-create').onclick = () => { showCreate = !showCreate; render(); };
+      document.getElementById('cancel-create')?.addEventListener('click', () => { showCreate = false; render(); });
+      document.getElementById('submit-issue')?.addEventListener('click', createIssue);
+    }
+
+    async function refreshIssues() {
+      if (!repoCtx) return;
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const [owner, repo] = ((repoCtx.full_name||repoCtx.repo||'')).split('/');
+        const res = await callTool('list_issues', { owner, repo, state: filterState });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { issues = JSON.parse(text); render(); }
+      } catch(e){console.error(e)}
+      finally { btn.disabled=false; btn.textContent='↺ Refresh'; }
+    }
+
+    async function createIssue() {
+      const titleEl = document.getElementById('new-title');
+      const bodyEl = document.getElementById('new-body');
+      const title = titleEl?.value?.trim();
+      if (!title || !repoCtx) return;
+      creating = true; render();
+      try {
+        const [owner, repo] = ((repoCtx.full_name||repoCtx.repo||'')).split('/');
+        const res = await callTool('create_issue', { owner, repo, title, body: bodyEl?.value||'' });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { const created = JSON.parse(text); issues = [created, ...issues]; }
+        showCreate = false; render();
+        // Notify host chat
+        window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/message',
+          params: { message: `✅ Created issue #${issues[0]?.number}: ${title}` } }, hostOrigin);
+      } catch(e) { console.error(e); creating = false; render(); }
+    }
+
+    init().catch(console.warn);
+  </script>
+</body>
+</html>

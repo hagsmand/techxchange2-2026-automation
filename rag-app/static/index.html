@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GitHub MCP App</title>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import { render, h } from 'https://esm.sh/preact@10.23.1';
+    import { useState, useRef, useEffect, useCallback } from 'https://esm.sh/preact@10.23.1/hooks';
+    import htm from 'https://esm.sh/htm@3.1.1';
+
+    const html = htm.bind(h);
+    const ORIGIN = window.location.origin;
+
+    // ──────────────────────────────────────────────────────────────────────
+    // AppBridge — postMessage ↔ /tool HTTP proxy
+    // Implements the HOST side of the MCP Apps View↔Host protocol.
+    //
+    // Protocol flow:
+    //   View → Host : ui/initialize          (View is ready)
+    //   Host → View : { result: hostCtx }    (response to ui/initialize)
+    //   View → Host : ui/notifications/initialized  (View fully ready)
+    //   Host → View : ui/notifications/tool-result  (push data to View)
+    //   View → Host : tools/call             (View requests a tool)
+    //   Host → View : { result: toolResult } (tool response)
+    // ──────────────────────────────────────────────────────────────────────
+    class AppBridge {
+      constructor(iframeEl, onMessage) {
+        this._iframe  = iframeEl;
+        this._onMsg   = onMessage;
+        this._pending = new Map();
+        this._ready   = false;
+        this._queue   = [];
+        this._handler = this._handle.bind(this);
+        window.addEventListener('message', this._handler);
+      }
+
+      destroy() {
+        window.removeEventListener('message', this._handler);
+      }
+
+      _handle(e) {
+        // Only accept messages from our exact iframe window
+        if (!this._iframe?.contentWindow) return;
+        if (e.source !== this._iframe.contentWindow) return;
+        const msg = e.data;
+        if (!msg || msg.jsonrpc !== '2.0') return;
+
+        // ── View → Host: ui/initialize ──────────────────────────────────
+        if (msg.method === 'ui/initialize') {
+          this._send({ jsonrpc: '2.0', id: msg.id, result: {
+            origin: ORIGIN,
+            theme: 'dark',
+            colorScheme: 'dark',
+            locale: navigator.language,
+            platform: 'web',
+          }});
+          return;
+        }
+
+        // ── View → Host: ui/notifications/initialized ───────────────────
+        // View is fully ready — flush any queued messages
+        if (msg.method === 'ui/notifications/initialized') {
+          this._ready = true;
+          this._queue.forEach(m => this._send(m));
+          this._queue = [];
+          return;
+        }
+
+        // ── View → Host: tools/call ─────────────────────────────────────
+        if (msg.method === 'tools/call') {
+          this._proxyTool(msg);
+          return;
+        }
+
+        // ── View → Host: ui/message ─────────────────────────────────────
+        if (msg.method === 'ui/message') {
+          if (this._onMsg) this._onMsg(msg.params?.message || '');
+          if (msg.id !== undefined) this._send({ jsonrpc: '2.0', id: msg.id, result: {} });
+          return;
+        }
+
+        // ── View → Host: ui/open-link ───────────────────────────────────
+        if (msg.method === 'ui/open-link') {
+          const url = msg.params?.url;
+          if (url) window.open(url, '_blank', 'noopener');
+          if (msg.id !== undefined) this._send({ jsonrpc: '2.0', id: msg.id, result: {} });
+          return;
+        }
+
+        // ── Responses to host-initiated requests ────────────────────────
+        if (msg.id !== undefined && this._pending.has(msg.id)) {
+          const { resolve, reject } = this._pending.get(msg.id);
+          this._pending.delete(msg.id);
+          if (msg.error) reject(new Error(msg.error.message));
+          else resolve(msg.result);
+        }
+      }
+
+      _send(msg) {
+        if (!this._iframe?.contentWindow) return;
+        this._iframe.contentWindow.postMessage(msg, ORIGIN);
+      }
+
+      async _proxyTool(msg) {
+        const { name, arguments: args } = msg.params ?? {};
+        try {
+          const resp = await fetch('/tool', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, arguments: args ?? {} }),
+          });
+          const result = await resp.json();
+          this._send({ jsonrpc: '2.0', id: msg.id, result });
+        } catch(e) {
+          this._send({ jsonrpc: '2.0', id: msg.id,
+            error: { code: -32000, message: e.message } });
+        }
+      }
+
+      // Push the initial data payload into the View.
+      // Called after the bridge is created. If View hasn't sent "initialized"
+      // yet, the message is queued and flushed when it does.
+      pushToolResult(data) {
+        const notification = {
+          jsonrpc: '2.0',
+          method: 'ui/notifications/tool-result',
+          params: { result: data },
+        };
+        if (this._ready) {
+          this._send(notification);
+        } else {
+          this._queue.push(notification);
+        }
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Plain-text templates (non-iframe views)
+    // ──────────────────────────────────────────────────────────────────────
+    function TextMsg({ data }) {
+      return html`<p class="tpl-text">${data.content}</p>`;
+    }
+    function TableMsg({ data }) {
+      return html`
+        <div class="tpl-table-wrap">
+          ${data.caption && html`<p class="table-caption">${data.caption}</p>`}
+          <table class="tpl-table">
+            <thead><tr>${data.columns.map(c=>html`<th key=${c}>${c}</th>`)}</tr></thead>
+            <tbody>${data.rows.map((r,i)=>html`<tr key=${i}>${r.map((c,j)=>html`<td key=${j}>${c}</td>`)}</tr>`)}</tbody>
+          </table>
+        </div>`;
+    }
+    function CodeMsg({ data }) {
+      const [cop,setCop]=useState(false);
+      return html`
+        <div class="tpl-code">
+          <div class="code-hdr">
+            <span class="code-lang">${data.language}</span>
+            <button class="copy-btn" onClick=${()=>{navigator.clipboard.writeText(data.code);setCop(true);setTimeout(()=>setCop(false),1500)}}>
+              ${cop?'✓ Copied':'Copy'}
+            </button>
+          </div>
+          <pre><code>${data.code}</code></pre>
+        </div>`;
+    }
+    function StepsMsg({ data }) {
+      return html`
+        <div class="tpl-steps">
+          ${data.title && html`<h3>${data.title}</h3>`}
+          <ol>${data.steps.map((s,i)=>html`<li key=${i}>${s}</li>`)}</ol>
+        </div>`;
+    }
+
+    const PLAIN_VIEWS = { text: TextMsg, table: TableMsg, code: CodeMsg, steps: StepsMsg };
+
+    // ──────────────────────────────────────────────────────────────────────
+    // ViewFrame — sandboxed iframe with AppBridge
+    //
+    // TIMING FLOW:
+    //   1. useEffect runs → registers earlyListener
+    //   2. Preact renders <iframe src="/ui/view">
+    //   3. iframe loads, View script calls init() → sends ui/initialize
+    //   4. earlyListener intercepts, creates AppBridge, calls _handle(e)
+    //      → Bridge handles ui/initialize → sends hostCtx back to View
+    //   5. View receives hostCtx → sends ui/notifications/initialized
+    //   6. Bridge._handle processes → sets _ready=true, flushes _queue
+    //
+    // The data is pushed into the queue BEFORE step 4 via an early push.
+    // It's placed in _queue before the bridge is even fully constructed.
+    // When the bridge goes ready (step 6), it flushes the queue.
+    // ──────────────────────────────────────────────────────────────────────
+    function ViewFrame({ view, data, onMessage }) {
+      const iframeRef = useRef(null);
+      const bridgeRef = useRef(null);
+      const dataRef   = useRef(data);
+
+      // Keep dataRef in sync with latest props
+      useEffect(() => { dataRef.current = data; }, [data]);
+
+      useEffect(() => {
+        let bridge = null;
+
+        function earlyListener(e) {
+          if (!iframeRef.current) return;
+          if (e.source !== iframeRef.current.contentWindow) return;
+          const msg = e.data;
+          if (!msg || msg.jsonrpc !== '2.0') return;
+
+          // Remove early listener — bridge takes over from here
+          window.removeEventListener('message', earlyListener);
+
+          if (!bridge) {
+            bridge = new AppBridge(iframeRef.current, onMessage);
+            bridgeRef.current = bridge;
+
+            // Queue the data BEFORE handling the message.
+            // When bridge goes ready after ui/notifications/initialized,
+            // it will flush the queue automatically.
+            bridge.pushToolResult(dataRef.current);
+
+            // Now let the bridge process the ui/initialize message
+            bridge._handle(e);
+          }
+        }
+
+        window.addEventListener('message', earlyListener);
+
+        return () => {
+          window.removeEventListener('message', earlyListener);
+          if (bridgeRef.current) {
+            bridgeRef.current.destroy();
+            bridgeRef.current = null;
+          }
+          bridge = null;
+        };
+      }, [view]); // Re-create bridge when view changes
+
+      return html`
+        <div class="view-frame-wrap">
+          <div class="view-toolbar">
+            <span class="view-badge">${view.replace('github_','')}</span>
+            <span class="view-label">Interactive View</span>
+            <button class="view-expand" title="Open in new tab"
+              onClick=${()=>window.open('/ui/'+view,'_blank','noopener')}>⤢</button>
+          </div>
+          <iframe
+            ref=${iframeRef}
+            src=${'/ui/' + view}
+            class="view-iframe"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            allow="clipboard-write"
+            title=${view}
+          ></iframe>
+        </div>`;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // AssistantMessage — routes to iframe or plain template
+    // ──────────────────────────────────────────────────────────────────────
+    function AssistantMessage({ view, data, text, onMessage }) {
+      const isGitHub = view?.startsWith('github_');
+      const Plain    = PLAIN_VIEWS[view];
+      return html`
+        <div class="message assistant">
+          <div class="view-type-badge">${view || 'text'}</div>
+          ${text && html`<p class="msg-summary">${text}</p>`}
+          ${isGitHub
+            ? html`<${ViewFrame} view=${view} data=${data} onMessage=${onMessage} />`
+            : Plain
+              ? html`<${Plain} data=${data} />`
+              : html`<p class="tpl-text">${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}</p>`
+          }
+        </div>`;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Other components
+    // ──────────────────────────────────────────────────────────────────────
+    function UserMessage({ content }) {
+      return html`<div class="message user">${content}</div>`;
+    }
+
+    function ThinkingIndicator() {
+      return html`
+        <div class="message assistant thinking">
+          <span class="dot"/><span class="dot"/><span class="dot"/>
+        </div>`;
+    }
+
+    function Header() {
+      return html`
+        <header>
+          <svg class="gh-logo" viewBox="0 0 16 16" width="22" height="22" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+                     0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+                     -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+                     .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15
+                     -.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27
+                     .68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12
+                     .51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
+                     0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          <h1>GitHub MCP App</h1>
+          <span class="model-tag">MCP Apps Host</span>
+        </header>`;
+    }
+
+    function SuggestedPrompts({ onSelect }) {
+      const prompts = [
+        'Search for Python FastAPI repos with over 1000 stars',
+        'List open pull requests in facebook/react',
+        'Show open issues in microsoft/vscode',
+        'Show the last 10 commits on main in torvalds/linux',
+        'Get details about the vercel/next.js repository',
+        'List open issues in openai/openai-python',
+      ];
+      return html`
+        <div class="suggestions">
+          <p class="suggestions-label">Try asking:</p>
+          <div class="suggestions-grid">
+            ${prompts.map(p => html`
+              <button key=${p} class="suggestion-btn" onClick=${()=>onSelect(p)}>${p}</button>`)}
+          </div>
+        </div>`;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // App
+    // ──────────────────────────────────────────────────────────────────────
+    function App() {
+      const [history, setHistory]       = useState([]);
+      const [apiHistory, setApiHistory] = useState([]);
+      const [loading, setLoading]       = useState(false);
+      const [error, setError]           = useState('');
+      const textRef   = useRef(null);
+      const bottomRef = useRef(null);
+
+      useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [history, loading]);
+
+      // When a View sends ui/message → treat it as a new user chat message
+      const handleViewMessage = useCallback((msg) => {
+        if (msg && typeof msg === 'string') send(msg);
+      }, []);
+
+      async function send(text) {
+        const msg = text ?? textRef.current?.value?.trim();
+        if (!msg || loading) return;
+        if (textRef.current) { textRef.current.value = ''; textRef.current.style.height = 'auto'; }
+
+        const newApiHistory = [...apiHistory, { role: 'user', content: msg }];
+        setApiHistory(newApiHistory);
+        setHistory(h => [...h, { type: 'user', content: msg }]);
+        setLoading(true);
+        setError('');
+
+        try {
+          const res = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: newApiHistory }),
+          });
+          const payload = await res.json();
+          if (!res.ok) {
+            setError(payload.detail ?? res.statusText);
+            setApiHistory(newApiHistory.slice(0,-1));
+            setHistory(h => h.slice(0,-1));
+            return;
+          }
+          const norm = normalise(payload);
+          setApiHistory(h => [...h, { role: 'assistant', content: norm.text || '' }]);
+          setHistory(h => [...h, { type: 'assistant', ...norm }]);
+        } catch(e) {
+          setError(`Network error: ${e.message}`);
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      function clearChat() { setHistory([]); setApiHistory([]); setError(''); }
+      function onInput(e) { e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,150)+'px'; }
+      function onKeyDown(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} }
+
+      return html`
+        <${Header}/>
+        <div id="chat">
+          ${history.length===0&&!loading&&html`<${SuggestedPrompts} onSelect=${send}/>`}
+          ${history.map((msg,i) => msg.type==='user'
+            ? html`<${UserMessage} key=${i} content=${msg.content}/>`
+            : html`<${AssistantMessage} key=${i} view=${msg.view} data=${msg.data} text=${msg.text}
+                      onMessage=${handleViewMessage}/>`
+          )}
+          ${loading  && html`<${ThinkingIndicator}/>`}
+          ${error    && html`<div class="message error">⚠ ${error}</div>`}
+          <div ref=${bottomRef}/>
+        </div>
+        <div id="input-bar">
+          <textarea ref=${textRef} id="prompt" rows="1"
+            placeholder="Ask anything about GitHub repos, issues, PRs, commits…"
+            onInput=${onInput} onKeyDown=${onKeyDown} disabled=${loading}/>
+          <button id="clear-btn" onClick=${clearChat}>Clear</button>
+          <button id="send-btn" onClick=${()=>send()} disabled=${loading}>Send</button>
+        </div>`;
+    }
+
+    // Normalise legacy { ui_type, data } → { view, data }
+    function normalise(payload) {
+      if (payload.view) return payload;
+      const MAP = {
+        pr_list: 'github_prs', issue_list: 'github_issues',
+        repo_card: 'github_repo', commit_list: 'github_commits',
+        card_list: 'github_search',
+      };
+      const view = MAP[payload.ui_type] || payload.ui_type || 'text';
+      return { view, data: payload.data ?? {}, text: payload.text || '' };
+    }
+
+    render(html`<${App}/>`, document.getElementById('app'));
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117; color: #e6edf3; height: 100dvh; overflow: hidden;
+    }
+    #app { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 20px; background: #161b22;
+      border-bottom: 1px solid #30363d; flex-shrink: 0;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; color: #fff; }
+    .gh-logo { color: #e6edf3; }
+    .model-tag {
+      margin-left: auto; font-size: 0.72rem; font-weight: 600; color: #58a6ff;
+      background: #1f6feb20; border: 1px solid #1f6feb50; border-radius: 20px; padding: 2px 10px;
+    }
+
+    #chat { flex: 1; overflow-y: auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 20px; }
+
+    .message { max-width: 900px; width: 100%; }
+    .message.user {
+      align-self: flex-end; background: #1f6feb; color: #fff;
+      border-radius: 18px 18px 4px 18px; padding: 10px 16px;
+      max-width: 75%; font-size: 0.92rem; line-height: 1.5;
+    }
+    .message.assistant { align-self: flex-start; display: flex; flex-direction: column; gap: 6px; }
+    .message.error {
+      align-self: flex-start; color: #f85149; background: #2a1a1a;
+      border: 1px solid #5a1a1a; border-radius: 8px; padding: 10px 14px;
+      font-size: 0.85rem;
+    }
+    .view-type-badge {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+      color: #58a6ff; background: #1f6feb15; border: 1px solid #1f6feb30;
+      border-radius: 20px; padding: 2px 10px; align-self: flex-start;
+    }
+    .msg-summary {
+      font-size: 0.88rem; color: #c9d1d9; line-height: 1.5;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 8px 12px;
+    }
+    .view-frame-wrap {
+      background: #161b22; border: 1px solid #30363d; border-radius: 12px; overflow: hidden;
+      width: 100%; max-width: 860px;
+    }
+    .view-toolbar {
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      background: #0d1117; border-bottom: 1px solid #21262d;
+    }
+    .view-badge {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+      background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+      padding: 2px 8px; color: #8b949e;
+    }
+    .view-label { font-size: 0.72rem; color: #8b949e; }
+    .view-expand {
+      margin-left: auto; padding: 3px 8px; background: #21262d; border: 1px solid #30363d;
+      border-radius: 6px; color: #8b949e; font-size: 0.8rem; cursor: pointer; transition: all 0.15s;
+    }
+    .view-expand:hover { background: #30363d; color: #e6edf3; }
+    .view-iframe {
+      width: 100%; height: 420px; border: none; display: block; background: #0d1117;
+    }
+
+    /* Plain templates */
+    .tpl-text {
+      font-size: 0.92rem; color: #c9d1d9; line-height: 1.7;
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      padding: 14px 16px; white-space: pre-wrap;
+    }
+    .tpl-table-wrap { overflow-x: auto; }
+    .table-caption { font-size: 0.82rem; color: #8b949e; margin-bottom: 8px; }
+    .tpl-table {
+      width: 100%; border-collapse: collapse;
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden;
+    }
+    .tpl-table th {
+      padding: 10px 14px; text-align: left; font-size: 0.78rem; font-weight: 600;
+      color: #8b949e; background: #0d1117; border-bottom: 1px solid #30363d;
+    }
+    .tpl-table td { padding: 10px 14px; color: #e6edf3; border-bottom: 1px solid #21262d; }
+    .tpl-table tr:last-child td { border-bottom: none; }
+    .tpl-table tr:hover td { background: #1c2128; }
+    .tpl-code { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; overflow: hidden; }
+    .code-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 14px; background: #161b22; border-bottom: 1px solid #30363d;
+    }
+    .code-lang { font-size: 0.72rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.06em; }
+    .copy-btn {
+      font-size: 0.75rem; color: #8b949e; background: #21262d;
+      border: 1px solid #30363d; border-radius: 6px; padding: 3px 10px; cursor: pointer;
+    }
+    .copy-btn:hover { background: #30363d; }
+    .tpl-code pre { padding: 16px; overflow-x: auto; font-family: "SF Mono","Fira Code",Menlo,monospace; font-size: 0.85rem; line-height: 1.6; color: #e6edf3; }
+    .tpl-steps { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+    .tpl-steps h3 { font-size: 0.95rem; font-weight: 600; color: #fff; }
+    .tpl-steps ol { display: flex; flex-direction: column; gap: 10px; padding-left: 24px; }
+    .tpl-steps li { font-size: 0.9rem; color: #c9d1d9; line-height: 1.6; }
+    .tpl-steps li::marker { color: #58a6ff; font-weight: 700; }
+
+    /* Thinking indicator */
+    .message.thinking {
+      display: flex; gap: 5px; align-items: center;
+      padding: 10px 14px; background: #161b22; border: 1px solid #30363d;
+      border-radius: 12px; align-self: flex-start;
+    }
+    .dot {
+      width: 7px; height: 7px; border-radius: 50%; background: #58a6ff;
+      animation: bounce 1.2s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100%{transform:scale(0.7);opacity:.4} 40%{transform:scale(1.1);opacity:1} }
+
+    /* Suggestions */
+    .suggestions { padding: 24px 0; display: flex; flex-direction: column; gap: 12px; }
+    .suggestions-label { font-size: 0.78rem; color: #484f58; text-transform: uppercase; letter-spacing: 0.06em; }
+    .suggestions-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .suggestion-btn {
+      padding: 7px 14px; background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; color: #8b949e; font-size: 0.82rem; cursor: pointer; transition: all 0.15s;
+    }
+    .suggestion-btn:hover { border-color: #58a6ff; color: #e6edf3; }
+
+    /* Input bar */
+    #input-bar {
+      display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px;
+      background: #161b22; border-top: 1px solid #30363d; flex-shrink: 0;
+    }
+    #prompt {
+      flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 10px;
+      padding: 10px 14px; color: #e6edf3; font-family: inherit; font-size: 0.9rem;
+      resize: none; outline: none; max-height: 150px; overflow-y: auto; line-height: 1.5;
+    }
+    #prompt:focus { border-color: #58a6ff; }
+    #prompt:disabled { opacity: 0.5; cursor: not-allowed; }
+    #prompt::placeholder { color: #484f58; }
+    #send-btn {
+      padding: 10px 20px; background: #238636; border: 1px solid #2ea043;
+      border-radius: 8px; color: #fff; font-size: 0.9rem; font-weight: 600;
+      cursor: pointer; transition: all 0.15s; flex-shrink: 0;
+    }
+    #send-btn:hover:not(:disabled) { background: #2ea043; }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #clear-btn {
+      padding: 10px 16px; background: transparent; border: 1px solid #30363d;
+      border-radius: 8px; color: #8b949e; font-size: 0.88rem; cursor: pointer; flex-shrink: 0;
+    }
+    #clear-btn:hover { border-color: #58a6ff; color: #e6edf3; }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+  </style>
+</body>
+</html>

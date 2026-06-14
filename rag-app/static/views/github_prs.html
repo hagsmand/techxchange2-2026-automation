@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Pull Requests</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      background:var(--color-bg,#0d1117);color:var(--color-text,#e6edf3);
+      padding:16px;font-size:14px}
+    .header{display:flex;align-items:center;gap:8px;margin-bottom:14px;
+      padding-bottom:10px;border-bottom:1px solid #30363d}
+    .header-icon{color:#c084fc;font-size:16px}
+    .header-title{font-size:0.95rem;font-weight:600}
+    .repo-tag{font-size:0.72rem;font-family:"SF Mono",Menlo,monospace;
+      background:#21262d;border:1px solid #30363d;border-radius:4px;
+      padding:2px 8px;color:#8b949e;margin-left:auto}
+    .filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+    .filter-btn{padding:5px 12px;border-radius:6px;border:1px solid #30363d;
+      font-size:0.78rem;font-weight:600;cursor:pointer;background:#21262d;
+      color:#8b949e;transition:all 0.15s}
+    .filter-btn.active,.filter-btn:hover{border-color:#58a6ff;color:#e6edf3;background:#1c2128}
+    .item{padding:12px 0;border-bottom:1px solid #21262d;display:flex;flex-direction:column;gap:6px}
+    .item:last-child{border-bottom:none}
+    .item-top{display:flex;align-items:flex-start;gap:8px}
+    .badge{font-size:0.65rem;font-weight:700;text-transform:uppercase;
+      border:1px solid;border-radius:20px;padding:2px 8px;flex-shrink:0;margin-top:2px}
+    .open{background:#1a3a1a;border-color:#2a6a2a;color:#4ade80}
+    .closed{background:#2a1a1a;border-color:#5a1a1a;color:#f87171}
+    .merged{background:#2a1a3a;border-color:#5a2a6a;color:#c084fc}
+    .item-num{font-size:0.78rem;color:#8b949e;font-family:"SF Mono",Menlo,monospace;margin-top:3px}
+    .item-title{font-size:0.9rem;font-weight:500;color:#e6edf3;line-height:1.4}
+    .item-meta{font-size:0.75rem;color:#8b949e;display:flex;gap:10px;flex-wrap:wrap;margin-top:2px}
+    .label-chip{font-size:0.65rem;font-weight:600;background:#1f6feb20;
+      border:1px solid #1f6feb50;color:#58a6ff;border-radius:20px;padding:1px 7px}
+    .pr-files{background:#161b22;border-radius:6px;padding:8px;margin-top:4px}
+    .pr-file{font-size:0.78rem;font-family:"SF Mono",Menlo,monospace;
+      color:#8b949e;padding:2px 0}
+    .pr-file.add{color:#4ade80}
+    .pr-file.del{color:#f87171}
+    .btn{padding:6px 14px;border-radius:6px;border:1px solid #30363d;
+      font-size:0.82rem;font-weight:600;cursor:pointer;transition:all 0.15s;
+      background:#21262d;color:#c9d1d9}
+    .btn:hover{background:#30363d}
+    .btn:disabled{opacity:0.5;cursor:not-allowed}
+    .btn-danger{background:#da3633;border-color:#f85149;color:#fff}
+    .btn-danger:hover:not(:disabled){background:#f85149}
+    .btn-merge{background:#8250df;border-color:#a371f7;color:#fff}
+    .btn-merge:hover:not(:disabled){background:#a371f7}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #30363d;
+      border-top-color:#58a6ff;border-radius:50%;animation:spin 0.7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .status{padding:12px 0;color:#8b949e;font-size:0.85rem}
+    .empty{padding:24px;text-align:center;color:#8b949e}
+    .expand-btn{font-size:0.72rem;color:#58a6ff;cursor:pointer;background:none;
+      border:none;padding:0;margin-top:4px}
+    .expand-btn:hover{text-decoration:underline}
+  </style>
+</head>
+<body>
+  <div id="root"><div class="status"><span class="spinner"></span> Loading…</div></div>
+
+  <script type="module">
+    let _id = 1;
+    const pending = new Map();
+    let hostOrigin = '*';
+
+    function rpc(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = _id++;
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, hostOrigin);
+        setTimeout(() => { pending.delete(id); reject(new Error('timeout')); }, 30000);
+      });
+    }
+
+    window.addEventListener('message', (e) => {
+      const msg = e.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const { resolve, reject } = pending.get(msg.id);
+        pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+      }
+      if (msg.id === undefined && msg.method === 'ui/notifications/tool-result') handleToolResult(msg.params);
+    });
+
+    const callTool = (name, args) => rpc('tools/call', { name, arguments: args });
+
+    async function init() {
+      let ctx = {};
+      try { ctx = await rpc('ui/initialize', { name: 'github-prs-view', version: '1.0' }); } catch(e) {}
+      if (ctx.origin) hostOrigin = ctx.origin;
+      window.parent.postMessage(
+        { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+        hostOrigin
+      );
+    }
+
+    let prs = [], repoCtx = null, filterState = 'open', expandedPR = null;
+
+    // Agent sends: { full_name: "owner/repo", prs: [...] }  for github_prs view.
+    function handleToolResult(params) {
+      const payload = params?.result ?? params;
+      if (Array.isArray(payload)) {
+        prs = payload; render();
+      } else if (payload?.prs && Array.isArray(payload.prs)) {
+        prs = payload.prs;
+        // full_name takes priority over legacy "repo" key
+        const fn = payload.full_name || payload.repo || null;
+        if (fn) repoCtx = { full_name: fn };
+        render();
+      } else if (payload?.items && Array.isArray(payload.items)) {
+        prs = payload.items; render();
+      }
+    }
+
+    function render() {
+      const root = document.getElementById('root');
+      const filtered = prs.filter(p => {
+        if (filterState === 'merged') return !!p.merged_at;
+        if (filterState === 'open') return p.state === 'open' && !p.merged_at;
+        if (filterState === 'closed') return p.state === 'closed' && !p.merged_at;
+        return true;
+      });
+
+      root.innerHTML = `
+        <div class="header">
+          <span class="header-icon">⤵</span>
+          <span class="header-title">Pull Requests</span>
+          ${repoCtx?.full_name?`<span class="repo-tag">${repoCtx.full_name}</span>`:''}
+        </div>
+        <div class="filters">
+          <button class="filter-btn ${filterState==='open'?'active':''}" data-s="open">⤵ Open</button>
+          <button class="filter-btn ${filterState==='closed'?'active':''}" data-s="closed">✕ Closed</button>
+          <button class="filter-btn ${filterState==='merged'?'active':''}" data-s="merged">⛙ Merged</button>
+        </div>
+        <div id="list">
+          ${filtered.length ? filtered.map(p => {
+            const state = p.merged_at ? 'merged' : p.state;
+            const label = state.toUpperCase();
+            const isExpanded = expandedPR === p.number;
+            return `
+            <div class="item">
+              <div class="item-top">
+                <span class="badge ${state}">${label}</span>
+                <span class="item-num">#${p.number}</span>
+                <div style="flex:1">
+                  <div class="item-title">${p.title||''}</div>
+                  <div class="item-meta">
+                    <span>by <strong style="color:#c9d1d9">${p.user?.login||p.author||''}</strong></span>
+                    <span>${(p.created_at||'').slice(0,10)}</span>
+                    ${(p.labels||[]).map(l=>`<span class="label-chip">${l.name||l}</span>`).join('')}
+                    ${p.html_url?`<a href="${p.html_url}" target="_blank" style="color:#58a6ff;font-size:0.75rem;margin-left:auto;text-decoration:none">View ↗</a>`:''}
+                  </div>
+                  <button class="expand-btn" data-pr="${p.number}">
+                    ${isExpanded ? '▲ Hide files' : '▼ Show changed files'}
+                  </button>
+                  ${isExpanded ? `<div class="pr-files" id="files-${p.number}"><span class="spinner"></span></div>` : ''}
+                </div>
+              </div>
+              ${state === 'open' ? `
+              <div style="display:flex;gap:6px;margin-top:4px">
+                <button class="btn btn-merge" data-merge="${p.number}" data-title="${p.title||''}">⛙ Merge</button>
+              </div>` : ''}
+            </div>`;
+          }).join('') : `<div class="empty">No ${filterState} PRs found.</div>`}
+        </div>
+        <div style="margin-top:12px">
+          <button class="btn" id="refresh-btn">↺ Refresh</button>
+        </div>`;
+
+      document.querySelectorAll('.filter-btn').forEach(b =>
+        b.addEventListener('click', () => { filterState = b.dataset.s; render(); }));
+      document.getElementById('refresh-btn').onclick = refreshPRs;
+
+      document.querySelectorAll('.expand-btn').forEach(b => {
+        b.addEventListener('click', async () => {
+          const num = parseInt(b.dataset.pr);
+          if (expandedPR === num) { expandedPR = null; render(); return; }
+          expandedPR = num; render();
+          await loadPRFiles(num);
+        });
+      });
+
+      document.querySelectorAll('[data-merge]').forEach(b => {
+        b.addEventListener('click', () => mergePR(parseInt(b.dataset.merge), b.dataset.title));
+      });
+    }
+
+    async function loadPRFiles(number) {
+      if (!repoCtx) return;
+      const [owner, repo] = (repoCtx.full_name||'').split('/');
+      if (!owner || !repo) return;
+      try {
+        const res = await callTool('get_pull_request_files', { owner, repo, pull_number: number });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        const el = document.getElementById(`files-${number}`);
+        if (!el || !text) return;
+        const files = JSON.parse(text);
+        el.innerHTML = files.map(f => `
+          <div class="pr-file ${f.status==='added'?'add':f.status==='removed'?'del':''}">
+            ${f.status==='added'?'+':f.status==='removed'?'-':'~'} ${f.filename}
+            <span style="color:#484f58"> (+${f.additions||0} -${f.deletions||0})</span>
+          </div>`).join('');
+      } catch(e) { console.error(e); }
+    }
+
+    async function refreshPRs() {
+      if (!repoCtx) return;
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const [owner, repo] = (repoCtx.full_name||'').split('/');
+        const res = await callTool('list_pull_requests', { owner, repo, state: 'all' });
+        const text = res.content?.find(c=>c.type==='text')?.text;
+        if (text) { prs = JSON.parse(text); render(); }
+      } catch(e){ console.error(e); }
+      finally { btn.disabled=false; btn.textContent='↺ Refresh'; }
+    }
+
+    async function mergePR(number, title) {
+      if (!repoCtx || !confirm(`Merge PR #${number}: ${title}?`)) return;
+      const [owner, repo] = (repoCtx.full_name||'').split('/');
+      try {
+        await callTool('merge_pull_request', { owner, repo, pull_number: number });
+        window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/message',
+          params: { message: `✅ Merged PR #${number}: ${title}` } }, hostOrigin);
+        await refreshPRs();
+      } catch(e){ console.error(e); alert('Merge failed: ' + e.message); }
+    }
+
+    init().catch(console.warn);
+  </script>
+</body>
+</html>
