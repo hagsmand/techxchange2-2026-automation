@@ -58,9 +58,20 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Verify bob is reachable and BOBSHELL_API_KEY is set
+          # Verify bob is reachable
           which bob || { echo "bob not found on PATH: $PATH"; exit 1; }
-          [ -n "$BOBSHELL_API_KEY" ] || { echo "BOBSHELL_API_KEY is empty — check GitHub secret"; exit 1; }
+
+          # Explicitly export so child processes inherit it
+          export BOBSHELL_API_KEY="${BOBSHELL_API_KEY}"
+
+          # Debug: confirm secret is non-empty (value stays masked in logs)
+          if [ -z "$BOBSHELL_API_KEY" ]; then
+            echo "ERROR: BOBSHELL_API_KEY is empty."
+            echo "Check: GitHub → Settings → Secrets → Actions → secret named exactly 'BOBSHELL_API_KEY'"
+            exit 1
+          else
+            echo "BOBSHELL_API_KEY is set (${#BOBSHELL_API_KEY} chars)"
+          fi
 
           DIFF=$(git diff $BASE_SHA...$HEAD_SHA --stat)
 
