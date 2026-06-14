@@ -64,7 +64,7 @@ jobs:
           echo ${{env.BOBSHELL_API_KEY}}
 
           # Explicitly export so child processes inherit it
-          export BOBSHELL_API_KEY="${BOBSHELL_API_KEY}"
+          export BOBSHELL_API_KEY="${env.BOBSHELL_API_KEY}"
 
           # Debug: confirm secret is non-empty (value stays masked in logs)
           if [ -z "$BOBSHELL_API_KEY" ]; then
